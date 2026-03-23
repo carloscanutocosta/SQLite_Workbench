@@ -1,0 +1,12 @@
+SQLite Workbench
+Copyright (c) 2026 Carlos Costa
+
+SQLite Workbench is open-source software released under the MIT License.
+
+This product is an independent software application for working with SQLite
+database files. It is not affiliated with, endorsed by, or sponsored by the
+SQLite project.
+
+The project name, branding, logo, and visual identity of SQLite Workbench are
+not granted for unrestricted reuse by the MIT License, except as necessary to
+comply with the license terms for source code redistribution.

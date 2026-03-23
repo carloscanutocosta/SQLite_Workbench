@@ -1,0 +1,8 @@
+# Interface Gráfica
+customtkinter
+# Realce de sintaxe SQL
+pygments
+# Compilação para .exe
+pyinstaller
+# Análise de dados
+pandas

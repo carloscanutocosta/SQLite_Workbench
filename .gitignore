@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+
+# Ambiente Virtual
+venv/
+env/
+.venv/
+.venv-1/
+
+# Build artifacts (PyInstaller)
+build/
+dist/
+.artifacts/
+Assets/
+*.spec
+version_info.txt
+__pycache__
+
+# Logs e Dados de Utilizador
+*.log
+settings.json
+favorites.json
+
+# IDEs
+.vscode/
+.idea/
+.claude/

@@ -2,8 +2,11 @@ import csv
 import json
 import os
 import threading
+import re
+import math
+import sys
 from collections import Counter, deque
-from tkinter import BooleanVar, filedialog, messagebox, ttk
+from tkinter import BooleanVar, filedialog, messagebox, ttk, Listbox
 from typing import Optional
 
 import customtkinter as ctk
@@ -44,6 +47,221 @@ class ToolTip:
         if self.id: self.widget.after_cancel(self.id); self.id = None
         if self.tooltip_window: self.tooltip_window.destroy(); self.tooltip_window = None
 
+class CreateTableDialog(ctk.CTkToplevel):
+    def __init__(self, parent, db_manager, on_success):
+        super().__init__(parent)
+        self.parent = parent
+        self.db_manager = db_manager
+        self.on_success = on_success
+        self.title(parent.t("create_table_title"))
+        self.geometry("700x600")
+        self.column_rows = []
+        self.fk_rows = []
+        self.existing_tables = db_manager.get_tables()
+
+        # Nome da Tabela
+        self.name_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.name_frame.pack(fill="x", padx=10, pady=10)
+        ctk.CTkLabel(self.name_frame, text=parent.t("table_name_title")).pack(side="left")
+        self.table_name_entry = ctk.CTkEntry(self.name_frame, width=300)
+        self.table_name_entry.pack(side="left", padx=10)
+
+        # Secção de Colunas
+        self.cols_frame = ctk.CTkScrollableFrame(self, label_text=parent.t("columns"), height=200)
+        self.cols_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        self.cols_header = ctk.CTkFrame(self.cols_frame, fg_color="transparent")
+        self.cols_header.pack(fill="x")
+        headers = [parent.t("col_name"), parent.t("col_type"), parent.t("pk"), "AI", parent.t("nn"), ""]
+        widths = [150, 100, 30, 30, 30, 30]
+        for h, w in zip(headers, widths):
+            ctk.CTkLabel(self.cols_header, text=h, width=w, anchor="w").pack(side="left", padx=2)
+
+        # Adicionar primeira coluna por defeito (ID)
+        self.add_column_row(default_name="id", default_type="INTEGER", pk=True, ai=True)
+
+        self.add_col_btn = ctk.CTkButton(self, text=parent.t("add_column"), command=self.add_column_row, height=25)
+        self.add_col_btn.pack(pady=5)
+
+        # Secção de Chaves Estrangeiras
+        self.fks_frame = ctk.CTkScrollableFrame(self, label_text=parent.t("foreign_keys"), height=120)
+        self.fks_frame.pack(fill="x", padx=10, pady=5)
+        
+        self.fks_header = ctk.CTkFrame(self.fks_frame, fg_color="transparent")
+        self.fks_header.pack(fill="x")
+        fk_headers = [parent.t("col_name"), parent.t("ref_table"), parent.t("ref_col"), ""]
+        for h in fk_headers:
+            ctk.CTkLabel(self.fks_header, text=h, width=130, anchor="w").pack(side="left", padx=2)
+
+        self.add_fk_btn = ctk.CTkButton(self, text=parent.t("add_fk"), command=self.add_fk_row, height=25, fg_color="gray")
+        self.add_fk_btn.pack(pady=5)
+
+        # Botões de Ação
+        self.btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.btn_frame.pack(fill="x", pady=10, padx=10)
+        ctk.CTkButton(self.btn_frame, text=parent.t("save"), command=self.save_table).pack(side="right", padx=5)
+        ctk.CTkButton(self.btn_frame, text=parent.t("cancel"), fg_color="transparent", border_width=1, command=self.destroy).pack(side="right", padx=5)
+
+    def add_column_row(self, default_name="", default_type="TEXT", pk=False, ai=False):
+        row = ctk.CTkFrame(self.cols_frame, fg_color="transparent")
+        row.pack(fill="x", pady=2)
+        
+        entry_name = ctk.CTkEntry(row, width=150)
+        entry_name.insert(0, default_name)
+        entry_name.pack(side="left", padx=2)
+        
+        type_menu = ctk.CTkOptionMenu(row, values=["TEXT", "INTEGER", "REAL", "BLOB", "NUMERIC"], width=100)
+        type_menu.set(default_type)
+        type_menu.pack(side="left", padx=2)
+        
+        var_pk = ctk.BooleanVar(value=pk)
+        chk_pk = ctk.CTkCheckBox(row, text="", variable=var_pk, width=30)
+        chk_pk.pack(side="left", padx=2)
+
+        var_ai = ctk.BooleanVar(value=ai)
+        chk_ai = ctk.CTkCheckBox(row, text="", variable=var_ai, width=30)
+        chk_ai.pack(side="left", padx=2)
+
+        var_nn = ctk.BooleanVar(value=False)
+        chk_nn = ctk.CTkCheckBox(row, text="", variable=var_nn, width=30)
+        chk_nn.pack(side="left", padx=2)
+        
+        btn_del = ctk.CTkButton(row, text=self.parent.t("remove"), width=30, fg_color="#D2042D", command=lambda: self._remove_row(row, self.column_rows))
+        btn_del.pack(side="left", padx=2)
+
+        self.column_rows.append({"frame": row, "name": entry_name, "type": type_menu, "pk": var_pk, "ai": var_ai, "nn": var_nn})
+
+    def add_fk_row(self):
+        row = ctk.CTkFrame(self.fks_frame, fg_color="transparent")
+        row.pack(fill="x", pady=2)
+        
+        entry_local = ctk.CTkEntry(row, width=130, placeholder_text=self.parent.t("col_name"))
+        entry_local.pack(side="left", padx=2)
+        
+        menu_table = ctk.CTkOptionMenu(row, values=self.existing_tables, width=130)
+        menu_table.pack(side="left", padx=2)
+        
+        entry_ref_col = ctk.CTkEntry(row, width=130, placeholder_text="id")
+        entry_ref_col.pack(side="left", padx=2)
+        
+        btn_del = ctk.CTkButton(row, text=self.parent.t("remove"), width=30, fg_color="#D2042D", command=lambda: self._remove_row(row, self.fk_rows))
+        btn_del.pack(side="left", padx=2)
+
+        self.fk_rows.append({"frame": row, "local": entry_local, "table": menu_table, "ref": entry_ref_col})
+
+    def _remove_row(self, row_frame, list_ref):
+        row_frame.destroy()
+        list_ref[:] = [item for item in list_ref if item["frame"] != row_frame]
+
+    def save_table(self):
+        name = self.table_name_entry.get().strip()
+        if not name: return messagebox.showerror("Error", "Table name required")
+        
+        cols = []
+        for r in self.column_rows:
+            cols.append({"name": r["name"].get(), "type": r["type"].get(), "pk": r["pk"].get(), "ai": r["ai"].get(), "nn": r["nn"].get()})
+            
+        fks = []
+        for r in self.fk_rows:
+            fks.append({"from": r["local"].get(), "table": r["table"].get(), "to": r["ref"].get()})
+            
+        self.on_success(name, cols, fks)
+        self.destroy()
+
+class ERDViewer(ctk.CTkToplevel):
+    def __init__(self, parent, db_manager):
+        super().__init__(parent)
+        self.parent = parent
+        self.db_manager = db_manager
+        self.title(parent.t("erd_view"))
+        self.geometry("1000x800")
+        
+        self.canvas = ctk.CTkCanvas(self, bg="#2b2b2b", highlightthickness=0)
+        self.canvas.pack(fill="both", expand=True)
+        
+        self.tables = {} # {name: {x, y, w, h, columns, fks}}
+        self.drag_data = {"item": None, "x": 0, "y": 0}
+        
+        self.canvas.bind("<ButtonPress-1>", self.on_press)
+        self.canvas.bind("<B1-Motion>", self.on_drag)
+        
+        self.load_schema()
+        self.arrange_tables()
+        self.draw()
+
+        ctk.CTkLabel(self, text=parent.t("erd_help"), text_color="gray", bg_color="#2b2b2b").place(x=10, y=10)
+
+    def load_schema(self):
+        table_names = self.db_manager.get_tables()
+        for name in table_names:
+            cols = self.db_manager.get_columns(name)
+            fks = self.db_manager.get_foreign_keys(name)
+            # Estimativa de dimensões
+            h = 30 + (len(cols) * 20)
+            w = 160
+            self.tables[name] = {"x": 0, "y": 0, "w": w, "h": h, "cols": cols, "fks": fks}
+
+    def arrange_tables(self):
+        # Layout circular simples para distribuir as tabelas inicialmente
+        n = len(self.tables)
+        center_x, center_y = 500, 400
+        radius = min(300, n * 30)
+        if n > 0:
+            angle_step = 360 / n
+            for i, name in enumerate(self.tables):
+                angle_rad = math.radians(i * angle_step)
+                self.tables[name]["x"] = center_x + radius * math.cos(angle_rad) - self.tables[name]["w"]/2
+                self.tables[name]["y"] = center_y + radius * math.sin(angle_rad) - self.tables[name]["h"]/2
+
+    def draw(self):
+        self.canvas.delete("all")
+        
+        # Desenhar conexões primeiro (atrás das tabelas)
+        for name, data in self.tables.items():
+            cx = data["x"] + data["w"]/2
+            cy = data["y"] + data["h"]/2
+            for fk in data["fks"]:
+                target = fk["table"]
+                if target in self.tables:
+                    t_data = self.tables[target]
+                    tx = t_data["x"] + t_data["w"]/2
+                    ty = t_data["y"] + t_data["h"]/2
+                    self.canvas.create_line(cx, cy, tx, ty, fill="#555", arrow="last", width=2)
+
+        # Desenhar tabelas
+        for name, data in self.tables.items():
+            x, y, w, h = data["x"], data["y"], data["w"], data["h"]
+            # Caixa
+            self.canvas.create_rectangle(x, y, x+w, y+h, fill="#333", outline="#555", tags=("table", name))
+            # Cabeçalho
+            self.canvas.create_rectangle(x, y, x+w, y+25, fill="#1f538d", outline="#555", tags=("table", name))
+            self.canvas.create_text(x+w/2, y+12, text=name, fill="white", font=("Arial", 10, "bold"), tags=("table", name))
+            # Colunas
+            for i, col in enumerate(data["cols"]):
+                self.canvas.create_text(x+10, y+40+(i*20), text=col, fill="#ddd", anchor="w", font=("Arial", 9), tags=("table", name))
+
+    def on_press(self, event):
+        x, y = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
+        items = self.canvas.find_overlapping(x, y, x+1, y+1)
+        for item in items:
+            tags = self.canvas.gettags(item)
+            if "table" in tags:
+                self.drag_data["item"] = tags[1]
+                self.drag_data["x"] = event.x
+                self.drag_data["y"] = event.y
+                return
+
+    def on_drag(self, event):
+        if self.drag_data["item"]:
+            dx = event.x - self.drag_data["x"]
+            dy = event.y - self.drag_data["y"]
+            name = self.drag_data["item"]
+            self.tables[name]["x"] += dx
+            self.tables[name]["y"] += dy
+            self.drag_data["x"] = event.x
+            self.drag_data["y"] = event.y
+            self.draw()
+
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -53,7 +271,7 @@ class App(ctk.CTk):
 
         self.db_manager: Optional[DatabaseManager] = None
         self.current_table_buttons = []
-        self.query_history = deque(maxlen=10)
+        self.query_history = deque(maxlen=20)
         self.history_buttons = []
         self.favorite_queries = []
         self.favorite_buttons = []
@@ -62,16 +280,36 @@ class App(ctk.CTk):
         self.context_menu_table_name: Optional[str] = None
         self.read_only_var = BooleanVar(value=False)
         self.current_table_name: Optional[str] = None
-        self.current_filter: str = ""
+        self.current_filter: dict = {}
         self.current_page = 1
         self.rows_per_page = 1000
+        self.sort_column: Optional[str] = None
+        self.sort_order: str = "ASC"
         self.total_rows = 0
         self.total_pages = 1
         self.theme_mode = "Dark"
         self.language = "pt"
+        self.autocomplete_list = []
+        self.suggestion_window = None
         self._load_settings()
         ctk.set_appearance_mode(self.theme_mode)
-        self.title(f"{self.t('app_title')} v0.9.0")
+        self.title(f"{self.t('app_title')} v1.0.0")
+
+        # Configurar ícone da janela
+        try:
+            base_path = sys._MEIPASS
+        except AttributeError:
+            base_path = os.path.abspath(".")
+            
+        icon_path = os.path.join(base_path, "Assets", "Icons", "icon.ico")
+        if not os.path.exists(icon_path): # Fallback para desenvolvimento
+             icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Assets", "Icons", "icon.ico")
+
+        if os.path.exists(icon_path):
+            try:
+                self.iconbitmap(icon_path)
+            except Exception:
+                pass
 
         self._setup_ui()
         self._setup_treeview_style()
@@ -79,6 +317,7 @@ class App(ctk.CTk):
         self._create_sidebar_context_menu()
         self._setup_sql_tags()
         self._load_favorites()
+        self._load_history()
 
     def t(self, key):
         """Retorna o texto traduzido para a chave fornecida."""
@@ -87,8 +326,7 @@ class App(ctk.CTk):
     def _setup_ui(self):
         self.sidebar_frame = ctk.CTkFrame(self, width=200, corner_radius=0)
         self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
-        self.sidebar_frame.grid_rowconfigure(6, weight=1)
-        
+        self.sidebar_frame.grid_rowconfigure(7, weight=1)
         ctk.CTkLabel(self.sidebar_frame, text=self.t("db_explorer"), font=ctk.CTkFont(size=20, weight="bold")).grid(row=0, column=0, padx=20, pady=(20, 10))
         
         load_btn = ctk.CTkButton(self.sidebar_frame, text=self.t("load_db"), command=self.load_database)
@@ -107,18 +345,20 @@ class App(ctk.CTk):
         self.vacuum_btn.grid(row=4, column=0, padx=20, pady=(0, 10))
         ToolTip(self.vacuum_btn, self.t("tooltip_vacuum"))
 
+        self.erd_btn = ctk.CTkButton(self.sidebar_frame, text=self.t("erd_view"), command=self._open_erd_viewer, state="disabled", fg_color="#1f538d")
+        self.erd_btn.grid(row=5, column=0, padx=20, pady=(0, 10))
+        ToolTip(self.erd_btn, self.t("erd_help"))
+
         self.search_entry = ctk.CTkEntry(self.sidebar_frame, placeholder_text=self.t("search_placeholder"))
-        self.search_entry.grid(row=5, column=0, padx=20, pady=(0, 10), sticky="ew")
-        self.search_entry.bind("<KeyRelease>", self._filter_tables)
+        self.search_entry.grid(row=6, column=0, padx=20, pady=(0, 10), sticky="ew")
         self.search_entry.configure(state="disabled")
         self.scrollable_tables_frame = ctk.CTkScrollableFrame(self.sidebar_frame, label_text=self.t("tables"))
-        self.scrollable_tables_frame.grid(row=6, column=0, padx=20, pady=(10, 0), sticky="nsew")
-
+        self.scrollable_tables_frame.grid(row=7, column=0, padx=20, pady=(10, 0), sticky="nsew")
+        
         self.settings_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
-        self.settings_frame.grid(row=7, column=0, padx=20, pady=10, sticky="sw")
+        self.settings_frame.grid(row=8, column=0, padx=20, pady=10, sticky="sw")
 
         # Language Menu
-        ctk.CTkLabel(self.settings_frame, text=self.t("language")).pack(anchor="w")
         self.language_menu = ctk.CTkOptionMenu(
             self.settings_frame,
             values=["Português", "English"],
@@ -172,16 +412,31 @@ class App(ctk.CTk):
         # Área de Pesquisa na aba de Dados
         self.search_frame = ctk.CTkFrame(self.tab_data, fg_color="transparent")
         self.search_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=(5, 0))
+        
+        # Componentes do Filtro
+        self.filter_col_menu = ctk.CTkOptionMenu(self.search_frame, values=["Todos"], width=120)
+        self.filter_col_menu.pack(side="left", padx=(0, 5))
+        ToolTip(self.filter_col_menu, "Coluna para filtrar")
+
+        self.filter_op_menu = ctk.CTkOptionMenu(self.search_frame, values=["LIKE", "=", "!=", ">", "<", ">=", "<="], width=80)
+        self.filter_op_menu.pack(side="left", padx=(0, 5))
+        ToolTip(self.filter_op_menu, "Operador")
+
         self.data_search_entry = ctk.CTkEntry(self.search_frame, placeholder_text=self.t("search_data_placeholder"))
         self.data_search_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
         self.data_search_entry.bind("<Return>", self._perform_data_search)
+        
         self.data_search_btn = ctk.CTkButton(self.search_frame, text=self.t("search_btn"), width=80, command=self._perform_data_search)
         self.data_search_btn.pack(side="left")
         self.data_clear_btn = ctk.CTkButton(self.search_frame, text=self.t("clear_btn"), width=60, fg_color="gray", hover_color="gray30", command=self._clear_data_search)
         self.data_clear_btn.pack(side="left", padx=(5, 0))
 
+        self.data_progress = ctk.CTkProgressBar(self.tab_data, height=10, mode="indeterminate")
+        self.data_progress.grid(row=1, column=0, sticky="ew", padx=5, pady=(5, 5))
+        self.data_progress.grid_remove()
+
         self.tree_container = ctk.CTkFrame(self.tab_data, fg_color="transparent")
-        self.tree_container.grid(row=1, column=0, sticky="nsew")
+        self.tree_container.grid(row=2, column=0, sticky="nsew")
         self.tree_container.grid_rowconfigure(0, weight=1)
         self.tree_container.grid_columnconfigure(0, weight=1)
         self.tree = self._create_treeview(self.tree_container)
@@ -190,7 +445,7 @@ class App(ctk.CTk):
         self.tree.bind("<Button-3>", self._show_tree_context_menu)
 
         self.pagination_frame = ctk.CTkFrame(self.tab_data, fg_color="transparent")
-        self.pagination_frame.grid(row=2, column=0, sticky="ew", padx=5, pady=(10, 0))
+        self.pagination_frame.grid(row=3, column=0, sticky="ew", padx=5, pady=(10, 0))
         self.prev_page_btn = ctk.CTkButton(self.pagination_frame, text=self.t("prev"), width=80, command=self.prev_page)
         self.prev_page_btn.pack(side="left")
         self.page_entry = ctk.CTkEntry(self.pagination_frame, width=60, justify="center")
@@ -220,7 +475,12 @@ class App(ctk.CTk):
         self.sql_input = ctk.CTkTextbox(self.sql_left_pane, font=ctk.CTkFont(family="Consolas", size=14))
         self.sql_input.grid(row=0, column=0, sticky="nsew", padx=(0, 5), pady=5)
         self.sql_input.insert("0.0", "-- Query SQL\nSELECT * FROM sqlite_master;")
-        self.sql_input.bind("<KeyRelease>", self._update_syntax_highlighting)
+        self.sql_input.bind("<KeyRelease>", self._on_key_release)
+        self.sql_input.bind("<Tab>", self._confirm_autocomplete)
+        self.sql_input.bind("<Up>", self._navigate_autocomplete)
+        self.sql_input.bind("<Down>", self._navigate_autocomplete)
+        self.sql_input.bind("<Return>", self._handle_return)
+        self.sql_input.bind("<FocusOut>", lambda e: self._hide_autocomplete())
         self.sql_input.bind("<Control-Return>", lambda event: self.run_custom_query())
         self.sql_execute_btn = ctk.CTkButton(self.sql_left_pane, text=self.t("exec_sql"), command=self.run_custom_query, state="disabled")
         self.sql_execute_btn.grid(row=1, column=0, sticky="e", padx=(0, 5), pady=(5, 10))
@@ -342,6 +602,7 @@ class App(ctk.CTk):
             self.vacuum_btn.configure(state="normal")
             self.new_table_btn.configure(state="normal")
             self.sql_execute_btn.configure(state="normal")
+            self.erd_btn.configure(state="normal")
             self._refresh_table_list()
             if not self.current_table_buttons:
                 messagebox.showwarning(self.t("warning"), self.t("db_empty_warning"))
@@ -354,6 +615,9 @@ class App(ctk.CTk):
         self.current_table_buttons.clear()
         if not self.db_manager:
             return
+            
+        self._load_autocomplete_data()
+        
         tables = self.db_manager.get_tables()
         self.search_entry.configure(state="normal" if tables else "disabled")
         for table in tables:
@@ -381,16 +645,21 @@ class App(ctk.CTk):
         if not self.db_manager:
             messagebox.showwarning(self.t("warning"), self.t("load_db_first"))
             return
-        dialog = ctk.CTkInputDialog(text=self.t("enter_table_name"), title=self.t("new_table"))
-        table_name = dialog.get_input()
-        if not table_name or not table_name.strip():
-            return
-        try:
-            self.db_manager.create_table(table_name.strip(), [{"name": "id", "type": "INTEGER", "pk": True, "ai": True, "nn": True}])
-            self._refresh_table_list()
-            self.show_table_data(table_name.strip())
-        except Exception as e:
-            messagebox.showerror(self.t("error"), str(e))
+            
+        def on_create(name, cols, fks):
+            try:
+                self.db_manager.create_table(name, cols, fks)
+                self._refresh_table_list()
+                self.show_table_data(name)
+                messagebox.showinfo(self.t("success"), f"Tabela '{name}' criada.")
+            except Exception as e:
+                messagebox.showerror(self.t("error"), str(e))
+
+        CreateTableDialog(self, self.db_manager, on_create)
+
+    def _open_erd_viewer(self):
+        if self.db_manager:
+            ERDViewer(self, self.db_manager)
 
     def _import_csv(self):
         if not self.db_manager:
@@ -452,7 +721,8 @@ class App(ctk.CTk):
         self.current_table_name = table_name
         if reset_filter:
             self._clear_data_search(reload=False)
-        self._refresh_data_view()
+        self.sort_column = None
+        self.sort_order = "ASC"
         schema = self.db_manager.get_table_schema(table_name)
         self.schema_textbox.configure(state="normal")
         self.schema_textbox.delete("0.0", "end")
@@ -460,37 +730,99 @@ class App(ctk.CTk):
         self.schema_textbox.configure(state="disabled")
         self._load_table_statistics(table_name)
         self.pagination_frame.grid()
+        
+        # Atualizar dropdown de colunas
+        columns = self.db_manager.get_columns(table_name)
+        filter_opts = ["Todos"] + columns
+        self.filter_col_menu.configure(values=filter_opts)
+        self.filter_col_menu.set("Todos")
+        
+        self._refresh_data_view()
         self.new_record_btn.configure(state="normal")
         self.export_btn.configure(state="normal")
 
     def _perform_data_search(self, event=None):
-        self.current_filter = self.data_search_entry.get().strip()
+        self.current_filter = {
+            "column": self.filter_col_menu.get(),
+            "operator": self.filter_op_menu.get(),
+            "value": self.data_search_entry.get().strip()
+        }
         self._refresh_data_view()
 
     def _clear_data_search(self, reload=True):
-        self.current_filter = ""
+        self.current_filter = {}
         self.data_search_entry.delete(0, "end")
+        self.filter_col_menu.set("Todos")
+        self.filter_op_menu.set("LIKE")
         if reload and self.current_table_name:
             self._refresh_data_view()
 
     def _refresh_data_view(self):
-        if not self.db_manager or not self.current_table_name:
-            return
-        # Atualizar contagens com base no filtro
-        self.total_rows = self.db_manager.get_table_row_count(self.current_table_name, self.current_filter)
-        self.total_pages = max(1, (self.total_rows + self.rows_per_page - 1) // self.rows_per_page)
-        # Carregar primeira página
-        self._load_page_data(1)
+        """Inicia o carregamento da primeira página e recálculo total."""
+        self._load_page_data(1, calculate_total=True)
 
-    def _load_page_data(self, page_number: int):
+    def _load_page_data(self, page_number: int, calculate_total: bool = False):
+        """Inicia o carregamento dos dados em thread separada."""
         if not self.db_manager or not self.current_table_name:
             return
+
+        self.data_progress.grid()
+        self.data_progress.start()
+        self._set_data_controls_state("disabled")
+
+        threading.Thread(
+            target=self._thread_fetch_data,
+            args=(self.current_table_name, page_number, self.current_filter, calculate_total, self.sort_column, self.sort_order),
+            daemon=True
+        ).start()
+
+    def _thread_fetch_data(self, table_name, page, filter_config, calculate_total, sort_column, sort_order):
+        try:
+            total_rows = None
+            if calculate_total:
+                total_rows = self.db_manager.get_table_row_count(table_name, filter_config)
+            
+            offset = (page - 1) * self.rows_per_page
+            columns, rows = self.db_manager.get_table_data(
+                table_name, 
+                limit=self.rows_per_page, 
+                offset=offset, 
+                filter_config=filter_config,
+                sort_column=sort_column,
+                sort_order=sort_order
+            )
+            
+            self.after(0, lambda: self._on_data_ready(table_name, page, total_rows, columns, rows))
+        except Exception as e:
+            self.after(0, lambda: self._on_data_error(e))
+
+    def _on_data_ready(self, table_name, page, total_rows, columns, rows):
+        self.data_progress.stop()
+        self.data_progress.grid_remove()
+        self._set_data_controls_state("normal")
+
+        if table_name != self.current_table_name:
+            return
+            
+        if total_rows is not None:
+            self.total_rows = total_rows
+            self.total_pages = max(1, (self.total_rows + self.rows_per_page - 1) // self.rows_per_page)
         
-        columns, rows = self.db_manager.get_table_data(self.current_table_name, limit=self.rows_per_page, offset=(page_number - 1) * self.rows_per_page, filter_text=self.current_filter)
+        self.current_page = page
         self._clear_treeview(self.tree)
-        self._fill_treeview(self.tree, columns, rows)
-        self.current_page = page_number
+        self._fill_treeview(self.tree, columns, rows, sort_callback=self._sort_by_column)
         self._update_pagination_controls()
+
+    def _on_data_error(self, error):
+        self.data_progress.stop()
+        self.data_progress.grid_remove()
+        self._set_data_controls_state("normal")
+        messagebox.showerror(self.t("error"), str(error))
+
+    def _set_data_controls_state(self, state):
+        self.data_search_btn.configure(state=state)
+        self.prev_page_btn.configure(state=state if state == "disabled" else ("normal" if self.current_page > 1 else "disabled"))
+        self.next_page_btn.configure(state=state if state == "disabled" else ("normal" if self.current_page < self.total_pages else "disabled"))
 
     def _update_pagination_controls(self):
         self.page_entry.delete(0, "end")
@@ -563,7 +895,7 @@ class App(ctk.CTk):
                 self.db_manager.update_record(self.current_table_name, rowid, new_data)
                 messagebox.showinfo(self.t("success"), self.t("record_updated"))
                 dialog.destroy()
-                self._load_page_data(self.current_page)
+                self._load_page_data(self.current_page, calculate_total=False)
             except Exception as e:
                 messagebox.showerror(self.t("error"), str(e))
 
@@ -607,7 +939,7 @@ class App(ctk.CTk):
                 self.db_manager.insert_record(self.current_table_name, data)
                 messagebox.showinfo(self.t("success"), self.t("record_inserted"))
                 dialog.destroy()
-                self._load_page_data(self.current_page)
+                self._load_page_data(self.current_page, calculate_total=True)
             except Exception as e:
                 messagebox.showerror(self.t("error"), str(e))
 
@@ -623,7 +955,7 @@ class App(ctk.CTk):
         rowid = self.tree.item(selected_items[0], "values")[0]
         if messagebox.askyesno(self.t("confirm"), self.t("confirm_delete_record").format(rowid)):
             self.db_manager.delete_record(self.current_table_name, rowid)
-            self._load_page_data(self.current_page)
+            self._load_page_data(self.current_page, calculate_total=True)
 
     def _rename_table(self):
         if not self.context_menu_table_name or not self.db_manager:
@@ -816,6 +1148,102 @@ class App(ctk.CTk):
             except Exception as e:
                 messagebox.showerror(self.t("error"), self.t("export_error").format(e))
 
+    def _load_autocomplete_data(self):
+        self.autocomplete_list = [
+            "SELECT", "FROM", "WHERE", "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE",
+            "CREATE", "TABLE", "DROP", "ALTER", "INDEX", "VIEW", "TRIGGER",
+            "AND", "OR", "NOT", "NULL", "IS", "IN", "BETWEEN", "LIKE", "LIMIT", "OFFSET",
+            "ORDER", "BY", "GROUP", "HAVING", "JOIN", "ON", "AS", "DISTINCT", "CASE", "WHEN", "THEN", "ELSE", "END"
+        ]
+        if self.db_manager:
+            try:
+                tables = self.db_manager.get_tables()
+                self.autocomplete_list.extend(tables)
+                for table in tables:
+                    self.autocomplete_list.extend(self.db_manager.get_columns(table))
+            except:
+                pass
+        
+        self.autocomplete_list = sorted(list(set(self.autocomplete_list)), key=str.lower)
+
+    def _on_key_release(self, event):
+        self._update_syntax_highlighting(event)
+        if event.keysym in ["Up", "Down", "Return", "Tab", "Escape", "Left", "Right", "Control_L", "Control_R", "Shift_L", "Shift_R"]:
+            return
+        self._show_autocomplete()
+
+    def _show_autocomplete(self):
+        text_widget = self.sql_input._textbox
+        cursor_pos = text_widget.index("insert")
+        line_start = text_widget.index("insert linestart")
+        current_line = text_widget.get(line_start, cursor_pos)
+        
+        match = re.search(r"(\w+)$", current_line)
+        if not match:
+            self._hide_autocomplete()
+            return
+        
+        word = match.group(1)
+        if len(word) < 2:
+             self._hide_autocomplete()
+             return
+
+        suggestions = [item for item in self.autocomplete_list if item.lower().startswith(word.lower())]
+        if not suggestions:
+            self._hide_autocomplete()
+            return
+
+        if not self.suggestion_window:
+            self.suggestion_window = ctk.CTkToplevel(self)
+            self.suggestion_window.wm_overrideredirect(True)
+            self.suggestion_window.attributes('-topmost', True)
+            self.suggestion_listbox = Listbox(self.suggestion_window, font=("Consolas", 12), bg="#2b2b2b", fg="white", selectbackground="#1f538d", borderwidth=0, highlightthickness=0)
+            self.suggestion_listbox.pack(fill="both", expand=True)
+        
+        bbox = text_widget.bbox("insert")
+        if bbox:
+            x, y, w, h = bbox
+            root_x = text_widget.winfo_rootx() + x
+            root_y = text_widget.winfo_rooty() + y + h
+            self.suggestion_window.geometry(f"200x{min(len(suggestions)*20, 150)}+{root_x}+{root_y}")
+
+        self.suggestion_listbox.delete(0, "end")
+        for s in suggestions:
+            self.suggestion_listbox.insert("end", s)
+        self.suggestion_listbox.select_set(0)
+        self.current_prefix_len = len(word)
+
+    def _confirm_autocomplete(self, event=None):
+        if self.suggestion_window and self.suggestion_listbox.curselection():
+            selection = self.suggestion_listbox.get(self.suggestion_listbox.curselection()[0])
+            text_widget = self.sql_input._textbox
+            text_widget.delete(f"insert-{self.current_prefix_len}c", "insert")
+            text_widget.insert("insert", selection)
+            self._hide_autocomplete()
+            return "break"
+
+    def _hide_autocomplete(self):
+        if self.suggestion_window:
+            self.suggestion_window.destroy()
+            self.suggestion_window = None
+
+    def _navigate_autocomplete(self, event):
+        if self.suggestion_window:
+            cur = self.suggestion_listbox.curselection()
+            index = cur[0] if cur else 0
+            
+            if event.keysym == "Up": index = max(0, index - 1)
+            elif event.keysym == "Down": index = min(self.suggestion_listbox.size() - 1, index + 1)
+            
+            self.suggestion_listbox.select_clear(0, "end")
+            self.suggestion_listbox.select_set(index)
+            self.suggestion_listbox.see(index)
+            return "break"
+
+    def _handle_return(self, event):
+        if self.suggestion_window:
+            return self._confirm_autocomplete()
+
     def _show_pandas_stats(self, table_name):
         if not self.db_manager:
             return
@@ -842,6 +1270,7 @@ class App(ctk.CTk):
         result = self.db_manager.execute_custom_query(query)
         if not self.query_history or query != self.query_history[0]:
             self.query_history.appendleft(query)
+            self._save_history()
             self._update_history_panel()
         if isinstance(result, tuple):
             self._fill_treeview(self.tree_sql, result[0], result[1])
@@ -849,16 +1278,33 @@ class App(ctk.CTk):
         else:
             messagebox.showinfo(self.t("success"), result)
 
-    def _fill_treeview(self, tree, cols, rows):
+    def _fill_treeview(self, tree, cols, rows, sort_callback=None):
         tree["columns"] = cols
         for col in cols:
             if col == "rowid":
                 tree.column(col, width=0, stretch=False)
                 continue
-            tree.heading(col, text=col)
+            
+            text = col
+            if sort_callback and col == self.sort_column:
+                text += " ▼" if self.sort_order == "DESC" else " ▲"
+
+            if sort_callback:
+                tree.heading(col, text=text, command=lambda c=col: sort_callback(c))
+            else:
+                tree.heading(col, text=text)
+                
             tree.column(col, width=max(len(col) * 10, 100), minwidth=50)
         for row in rows:
             tree.insert("", "end", values=row)
+
+    def _sort_by_column(self, column):
+        if self.sort_column == column:
+            self.sort_order = "DESC" if self.sort_order == "ASC" else "ASC"
+        else:
+            self.sort_column = column
+            self.sort_order = "ASC"
+        self._load_page_data(1)
 
     def _clear_treeview(self, tree):
         tree.delete(*tree.get_children())
@@ -920,6 +1366,23 @@ class App(ctk.CTk):
                 self._update_favorites_panel()
             except Exception:
                 self.favorite_queries = []
+
+    def _load_history(self):
+        if os.path.exists("history.json"):
+            try:
+                with open("history.json", "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    self.query_history = deque(data, maxlen=20)
+                self._update_history_panel()
+            except Exception:
+                pass
+
+    def _save_history(self):
+        try:
+            with open("history.json", "w", encoding="utf-8") as f:
+                json.dump(list(self.query_history), f, ensure_ascii=False, indent=4)
+        except Exception:
+            pass
 
     def _add_to_favorites(self, query: str):
         if query not in self.favorite_queries:

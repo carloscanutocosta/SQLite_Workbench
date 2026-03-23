@@ -46,7 +46,47 @@ class DatabaseManager:
             logging.error(f"Erro ao listar tabelas: {e}")
             raise Exception(f"Erro ao listar tabelas: {e}")
 
-    def get_table_row_count(self, table_name: str, filter_text: str = None) -> int:
+    def _build_where_clause(self, table_name: str, filter_config: dict = None) -> Tuple[str, List[Any]]:
+        """Constrói a cláusula WHERE e os parâmetros com base na configuração do filtro."""
+        if not filter_config or not filter_config.get("value"):
+            return "", []
+
+        column = filter_config.get("column", "Todos")
+        operator = filter_config.get("operator", "LIKE")
+        value = filter_config.get("value", "")
+        
+        # Whitelist de operadores para segurança SQL
+        valid_operators = ["=", "!=", ">", "<", ">=", "<=", "LIKE"]
+        if operator not in valid_operators:
+            operator = "LIKE"
+
+        params = []
+        conditions = []
+
+        if column == "Todos":
+            # Comportamento antigo: pesquisa em todas as colunas com LIKE
+            cols = self.get_columns(table_name)
+            wildcard_filter = f"%{value}%"
+            for col in cols:
+                conditions.append(f'"{col}" LIKE ?')
+                params.append(wildcard_filter)
+            where_clause = f" WHERE {' OR '.join(conditions)}"
+        else:
+            # Filtro em coluna específica
+            safe_col = f'"{column.replace("\"", "\"\"")}"'
+            
+            # Ajuste para LIKE: adicionar % automaticamente para conveniência
+            if operator == "LIKE":
+                final_value = f"%{value}%"
+            else:
+                final_value = value
+                
+            where_clause = f" WHERE {safe_col} {operator} ?"
+            params.append(final_value)
+            
+        return where_clause, params
+
+    def get_table_row_count(self, table_name: str, filter_config: dict = None) -> int:
         """Obtém o número total de linhas numa tabela, opcionalmente filtradas."""
         if not self.conn:
             self.connect()
@@ -54,19 +94,7 @@ class DatabaseManager:
             cursor = self.conn.cursor()
             safe_table_name = f'"{table_name.replace("\"", "\"\"")}"'
             
-            where_clause = ""
-            params = []
-
-            if filter_text:
-                # Obter colunas para pesquisar em todas
-                columns = self.get_columns(table_name)
-                if columns:
-                    conditions = []
-                    wildcard_filter = f"%{filter_text}%"
-                    for col in columns:
-                        conditions.append(f'"{col}" LIKE ?')
-                        params.append(wildcard_filter)
-                    where_clause = f" WHERE {' OR '.join(conditions)}"
+            where_clause, params = self._build_where_clause(table_name, filter_config)
 
             query = f"SELECT COUNT(*) FROM {safe_table_name}{where_clause}"
             cursor.execute(query, tuple(params))
@@ -76,7 +104,7 @@ class DatabaseManager:
             logging.error(f"Erro ao contar linhas da tabela {table_name}: {e}")
             raise Exception(f"Erro ao contar linhas da tabela {table_name}: {e}")
 
-    def get_table_data(self, table_name: str, limit: int, offset: int, filter_text: str = None) -> Tuple[List[str], List[Tuple[Any]]]:
+    def get_table_data(self, table_name: str, limit: int, offset: int, filter_config: dict = None, sort_column: str = None, sort_order: str = "ASC") -> Tuple[List[str], List[Tuple[Any]]]:
         """Obtém uma 'página' de dados, opcionalmente filtrada."""
         if not self.conn:
             self.connect()
@@ -84,21 +112,16 @@ class DatabaseManager:
             cursor = self.conn.cursor()
             safe_table_name = f'"{table_name.replace("\"", "\"\"")}"'
             
-            where_clause = ""
-            params = []
+            where_clause, params = self._build_where_clause(table_name, filter_config)
+            order_clause = ""
 
-            if filter_text:
-                columns = self.get_columns(table_name)
-                if columns:
-                    conditions = []
-                    wildcard_filter = f"%{filter_text}%"
-                    for col in columns:
-                        conditions.append(f'"{col}" LIKE ?')
-                        params.append(wildcard_filter)
-                    where_clause = f" WHERE {' OR '.join(conditions)}"
+            if sort_column:
+                safe_sort_col = f'"{sort_column.replace("\"", "\"\"")}"'
+                safe_order = "DESC" if sort_order and sort_order.upper() == "DESC" else "ASC"
+                order_clause = f" ORDER BY {safe_sort_col} {safe_order}"
 
             # Fetch rowid for editing/deleting capabilities
-            query = f"SELECT rowid, * FROM {safe_table_name}{where_clause} LIMIT ? OFFSET ?"
+            query = f"SELECT rowid, * FROM {safe_table_name}{where_clause}{order_clause} LIMIT ? OFFSET ?"
             params.extend([limit, offset])
             
             cursor.execute(query, tuple(params))
@@ -233,7 +256,7 @@ class DatabaseManager:
             logging.error(f"Erro ao importar CSV para '{table_name}': {e}")
             raise Exception(f"Erro ao importar CSV: {e}")
 
-    def create_table(self, table_name: str, columns: List[dict]):
+    def create_table(self, table_name: str, columns: List[dict], foreign_keys: List[dict] = None):
         """Cria uma nova tabela vazia."""
         if not self.conn:
             self.connect()
@@ -267,6 +290,16 @@ class DatabaseManager:
                 
                 column_definitions.append(definition)
                 
+            if foreign_keys:
+                for fk in foreign_keys:
+                    local_col = fk.get('from')
+                    ref_table = fk.get('table')
+                    ref_col = fk.get('to')
+                    
+                    if local_col and ref_table and ref_col:
+                        fk_def = f'FOREIGN KEY ("{local_col}") REFERENCES "{ref_table}" ("{ref_col}")'
+                        column_definitions.append(fk_def)
+
             query = f"CREATE TABLE {safe_table_name} ({', '.join(column_definitions)})"
             
             cursor.execute(query)

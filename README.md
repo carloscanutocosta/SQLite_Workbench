@@ -1,7 +1,3 @@
-<<<<<<< HEAD
-# SQLiteTools
-Ferramenta para trabalhar com ficheiros SQLite
-=======
 # SQLite Workbench
 
 SQLite Workbench is a lightweight desktop application for exploring and working with SQLite databases. It provides a clean graphical interface for opening database files, browsing tables, inspecting schemas, running SQL queries, editing records, importing CSV data, and exporting results. The current codebase is implemented in Python 3 with `customtkinter` for the UI and `pygments` for SQL syntax highlighting. :contentReference[oaicite:0]{index=0}
@@ -83,5 +79,4 @@ This project is licensed under the MIT License. See the `LICENSE` file for detai
 
 ## Author
 
-Carlos Canuto Costa 
->>>>>>> main
+Carlos Canuto Costa

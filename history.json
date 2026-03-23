@@ -1,0 +1,6 @@
+[
+    "-- Query SQL\nSELECT * FROM platform_reference_postal_code WHERE (cp4=7800) AND (cp3=\"358\");",
+    "-- Query SQL\nSELECT * FROM platform_reference_postal_code WHERE (cp4=7800) AND (cp3=\"073\");",
+    "-- Query SQL\nSELECT * FROM platform_reference_postal_code WHERE (cp4=7800) AND (cp3=073);",
+    "-- Query SQL\nSELECT * FROM platform_reference_postal_code WHERE (cp4=7800) AND (cp3=589);"
+]

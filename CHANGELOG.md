@@ -2,7 +2,7 @@
 
 Todas as alterações notáveis a este projeto serão documentadas neste ficheiro.
 
-## [0.9.0.0] - Versão Inicial
+## [1.0.0.0] - Versão Inicial
 
 ### Adicionado
 - **Interface Gráfica**:
